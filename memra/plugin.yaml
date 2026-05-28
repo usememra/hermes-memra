@@ -1,0 +1,8 @@
+name: memra
+version: 1.0.0
+description: "Memra — self-hosted, EU-native memory API with hybrid semantic + structured recall, typed memories, and server-side compression."
+pip_dependencies:
+  - httpx
+hooks:
+  - on_pre_compress
+  - on_memory_write
