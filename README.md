@@ -1,49 +1,90 @@
-# hermes-memra
+# Memra ↔ Hermes Agent
 
-[Memra](https://usememra.com) memory provider for
-[Hermes Agent](https://hermes-agent.nousresearch.com) — give Hermes persistent,
-cross-session memory backed by Memra's hybrid semantic + structured recall.
+A [Memra](https://usememra.com) memory-provider plugin for
+[Hermes Agent](https://hermes-agent.nousresearch.com) (Nous Research).
 
-Memra is a self-hosted, EU-native memory API: typed memories
-(semantic / episodic / procedural / working), importance ranking, async
-embeddings, and server-side compression of long-lived memories.
+Hermes Agent supports pluggable, single-select external memory providers
+(Honcho, Mem0, Hindsight, OpenViking, Holographic, RetainDB, ByteRover,
+Supermemory). This makes **Memra** an option alongside them: hybrid
+semantic + structured recall, typed memories, importance ranking, EU-native
+self-hosting, and server-side compression of long-lived memories.
 
-## Install (Hermes ≥ 0.11)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/usememra/hermes-memra/main/install.sh | bash
-hermes memory setup        # select "memra"
-```
-
-That's it. `hermes memory setup` will prompt for your Memra API key and project
-id — get them at [usememra.com](https://usememra.com). Self-hosting Memra? Set
-`base_url` to your instance to keep all data on your own infrastructure.
-
-Check `hermes --version` first — user-installed providers require Hermes 0.11+.
+`memra/` is the drop-in plugin directory. In the Hermes **source tree** it
+lives at `plugins/memory/memra/` (the bundled-provider layout, imported as the
+package `plugins.memory.memra`). A **user install** is different: it goes one
+level deep at `$HERMES_HOME/plugins/memra/` with the entry module named
+`init.py` — see below.
 
 ## What it does
 
 | Hermes lifecycle | Memra behavior |
 |------------------|----------------|
-| `prefetch` | Background hybrid recall before each turn |
+| `prefetch` / `queue_prefetch` | Background hybrid recall before each turn |
 | `sync_turn` | Persists each turn as an `episodic` memory |
-| `on_pre_compress` | Ships about-to-be-discarded context to Memra so it survives window compression |
+| `on_pre_compress` | Ships about-to-be-discarded context to Memra so it survives window compression (Memra then compresses it server-side) |
 | `on_memory_write` | Mirrors Hermes `MEMORY.md` / `USER.md` writes into Memra |
+| Tools | `memra_search`, `memra_remember`, `memra_profile` |
 
-**Tools:** `memra_search`, `memra_remember`, `memra_profile`.
+All network calls are wrapped in a circuit breaker so a Memra outage never
+blocks the agent loop. The plugin is self-contained (only `httpx`) — it calls
+the Memra REST API directly, no Memra client package required.
 
-Self-contained (only `httpx`) and wrapped in a circuit breaker, so a Memra
-outage never blocks the agent loop.
+## Install today (Hermes ≥ 0.11)
 
-## Config
+Hermes discovers user-installed providers one level deep under
+`$HERMES_HOME/plugins/<name>/` and loads each provider's `init.py`. The easiest
+path is the installer:
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `api_key` | — | Memra API key (`memra_live_...`), stored in `~/.hermes/.env` |
-| `project_id` | — | Memra project id (`proj_...`) |
-| `tenant_id` | `hermes-user` | User/tenant scope (gateway sessions use the platform `user_id`) |
-| `base_url` | `https://usememra.com/api/v1` | Point at your self-hosted Memra |
+```bash
+curl -fsSL https://raw.githubusercontent.com/usememra/hermes-memra/main/install.sh | bash
+hermes memory setup        # select "memra", paste API key + project id
+```
 
-## License
+Or do it by hand — note the destination is `plugins/memra/` (not
+`plugins/memory/memra/`) and the file is deployed as `init.py`:
 
-MIT.
+```bash
+mkdir -p ~/.hermes/plugins/memra
+cp memra/__init__.py ~/.hermes/plugins/memra/init.py
+cp memra/plugin.yaml ~/.hermes/plugins/memra/
+hermes memory setup        # select "memra", paste API key + project id
+```
+
+Or wire it manually:
+
+```bash
+hermes config set memory.provider memra
+echo "MEMRA_API_KEY=memra_live_xxx" >> ~/.hermes/.env
+echo '{"project_id": "proj_xxx"}' > ~/.hermes/memra.json
+```
+
+Get an API key and project id at [usememra.com](https://usememra.com), or point
+`base_url` at your own self-hosted Memra to keep all data on your infra.
+
+## Ship to all Hermes users (PR)
+
+To appear in Hermes's official provider list, the `memra/` directory is
+submitted to `NousResearch/hermes-agent` under `plugins/memory/memra/`:
+
+1. Fork `NousResearch/hermes-agent`.
+2. Copy `memra/` → `plugins/memory/memra/`.
+3. Add an entry to `website/docs/user-guide/features/memory-providers.md`.
+4. Open a PR. (See `docs/developer-guide/memory-provider-plugin.md` for their
+   contribution requirements — this plugin already follows that contract.)
+
+PR note for maintainers: unlike the other providers this one ships
+self-contained (httpx only) rather than depending on a `memra-sdk` PyPI package,
+because the import name collides with an unrelated existing `memra` package.
+Happy to switch to the SDK once it's published under a non-colliding name.
+
+## Test
+
+```bash
+cd /path/to/hermes-agent
+cp -r integrations/hermes-agent/memra plugins/memory/memra
+python3 integrations/hermes-agent/test_memra_smoke.py   # network-stubbed
+```
+
+The smoke test exercises ABC compliance, all three tools, the prefetch/sync/
+compress/mirror hooks, the circuit breaker, and `MemoryManager` registration —
+no live Memra account required.

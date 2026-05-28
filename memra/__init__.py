@@ -310,6 +310,46 @@ class MemraMemoryProvider(MemoryProvider):
             hydrated.append(row)
         return hydrated
 
+    def _api_supersede(self, memory_id: str, content: str) -> None:
+        """Replace a memory's content in place via supersession. The old row is
+        marked superseded (drops out of recall/profile); the new row inherits
+        the old's type/importance/tags/source."""
+        resp = self._get_http().post(
+            f"/memories/{memory_id}/supersede",
+            json={"content": content[:_MAX_CONTENT_CHARS]},
+        )
+        resp.raise_for_status()
+
+    def _find_mirror_id(self, target: str, old_content: str) -> Optional[str]:
+        """Find the id of an active built-in-mirror memory whose content exactly
+        matches old_content. Uses the list endpoint (returns immediately, even
+        for rows whose embedding is still pending — unlike recall) filtered to
+        this mirror's source, then compares hydrated content exactly. Returns
+        None if no unambiguous match exists."""
+        source = f"hermes:builtin:{target}"
+        params = {
+            "tenant_id": self._tenant_id,
+            "project_id": self._project_id,
+            "limit": 100,
+            "sort": "created_at",
+            "order": "desc",
+        }
+        resp = self._get_http().get("/memories", params=params)
+        resp.raise_for_status()
+        for row in resp.json().get("memories", []) or []:
+            if row.get("status", "active") != "active" or row.get("source") != source:
+                continue
+            memory_id = row.get("id")
+            if not memory_id:
+                continue
+            try:
+                full = self._api_get(memory_id)
+            except Exception:
+                continue
+            if (full or {}).get("content") == old_content:
+                return memory_id
+        return None
+
     # -- System prompt -----------------------------------------------------
 
     def system_prompt_block(self) -> str:
@@ -420,9 +460,27 @@ class MemraMemoryProvider(MemoryProvider):
             return
 
         mem_type = "preference" if target == "user" else "context"
+        # On a Hermes `replace`, the built-in tool knows the prior text but only
+        # forwards it when the host passes old_text in metadata. When present we
+        # supersede the matching mirror in place (no duplicate); otherwise we
+        # add, which is the correct behaviour for `add` and a safe fallback when
+        # the prior text is unavailable.
+        old_content = (metadata or {}).get("old_text") if action == "replace" else None
 
         def _mirror():
             try:
+                if old_content:
+                    existing_id = self._find_mirror_id(target, old_content)
+                    if existing_id:
+                        try:
+                            self._api_supersede(existing_id, content)
+                            self._record_success()
+                            return
+                        except Exception as e:
+                            # Supersede can race (409 already_superseded) or fail
+                            # transiently. Fall through to a plain add so the
+                            # correction is never silently dropped.
+                            logger.debug("Memra supersede failed, falling back to add: %s", e)
                 self._api_add(content, type=mem_type, importance=6,
                               tags=[f"hermes:{target}"], source=f"hermes:builtin:{target}")
                 self._record_success()
