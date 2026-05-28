@@ -11,9 +11,8 @@ self-hosting, and server-side compression of long-lived memories.
 
 `memra/` is the drop-in plugin directory. In the Hermes **source tree** it
 lives at `plugins/memory/memra/` (the bundled-provider layout, imported as the
-package `plugins.memory.memra`). A **user install** is different: it goes one
-level deep at `$HERMES_HOME/plugins/memra/` with the entry module named
-`init.py` — see below.
+package `plugins.memory.memra`). A **user install** instead goes one level deep
+at `$HERMES_HOME/plugins/memra/` — see below.
 
 ## What it does
 
@@ -32,21 +31,18 @@ the Memra REST API directly, no Memra client package required.
 ## Install today (Hermes ≥ 0.11)
 
 Hermes discovers user-installed providers one level deep under
-`$HERMES_HOME/plugins/<name>/` and loads each provider's `init.py`. The easiest
-path is the installer:
+`$HERMES_HOME/plugins/<name>/`. The easiest path is the installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/usememra/hermes-memra/main/install.sh | bash
 hermes memory setup        # select "memra", paste API key + project id
 ```
 
-Or do it by hand — note the destination is `plugins/memra/` (not
-`plugins/memory/memra/`) and the file is deployed as `init.py`:
+Or do it by hand — note the destination is `plugins/memra/`, not
+`plugins/memory/memra/` (that's the in-tree bundled path):
 
 ```bash
-mkdir -p ~/.hermes/plugins/memra
-cp memra/__init__.py ~/.hermes/plugins/memra/init.py
-cp memra/plugin.yaml ~/.hermes/plugins/memra/
+cp -r memra ~/.hermes/plugins/memra
 hermes memory setup        # select "memra", paste API key + project id
 ```
 

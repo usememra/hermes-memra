@@ -321,11 +321,12 @@ class MemraMemoryProvider(MemoryProvider):
         resp.raise_for_status()
 
     def _find_mirror_id(self, target: str, old_content: str) -> Optional[str]:
-        """Find the id of an active built-in-mirror memory whose content exactly
-        matches old_content. Uses the list endpoint (returns immediately, even
-        for rows whose embedding is still pending — unlike recall) filtered to
-        this mirror's source, then compares hydrated content exactly. Returns
-        None if no unambiguous match exists."""
+        """Find the id of the active built-in-mirror memory that contains
+        old_content. Hermes passes old_text as a locating substring of the
+        stored entry, not the full content, so we match by substring. Uses the
+        list endpoint (returns immediately, even for rows whose embedding is
+        still pending — unlike recall), filtered to this mirror's source and
+        ordered newest-first, and returns the first containing match."""
         source = f"hermes:builtin:{target}"
         params = {
             "tenant_id": self._tenant_id,
@@ -346,7 +347,7 @@ class MemraMemoryProvider(MemoryProvider):
                 full = self._api_get(memory_id)
             except Exception:
                 continue
-            if (full or {}).get("content") == old_content:
+            if old_content in (full or {}).get("content", ""):
                 return memory_id
         return None
 

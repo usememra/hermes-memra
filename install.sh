@@ -7,12 +7,13 @@
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/usememra/hermes-memra/main/memra"
+FILES=(__init__.py plugin.yaml README.md)
 
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # Hermes discovers user-installed providers one level deep under
-# $HERMES_HOME/plugins/<name>/ and loads each provider's init.py. So the
-# provider goes directly in plugins/memra/ (NOT plugins/memory/memra/, which
-# is the in-tree bundled layout), and the entry module is named init.py.
+# $HERMES_HOME/plugins/<name>/, so the provider goes directly in plugins/memra/
+# — NOT plugins/memory/memra/, which is the in-tree bundled layout. The loader
+# imports each provider directory's __init__.py, so keep that filename.
 DEST="$HERMES_HOME/plugins/memra"
 
 say() { printf '\033[36m[memra]\033[0m %s\n' "$1"; }
@@ -21,21 +22,15 @@ say "Installing Memra memory provider into: $DEST"
 mkdir -p "$DEST"
 
 # Prefer local files when run from inside the repo; otherwise download.
-# The source package file is __init__.py (its in-tree bundled name); a user
-# install deploys it as init.py, which is what the user-plugin loader imports.
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)/memra"
 if [[ -f "$SRC_DIR/__init__.py" ]]; then
   say "Copying from local checkout"
-  cp "$SRC_DIR/__init__.py" "$DEST/init.py"
-  cp "$SRC_DIR/plugin.yaml" "$DEST/plugin.yaml"
-  cp "$SRC_DIR/README.md"   "$DEST/README.md"
+  cp "$SRC_DIR"/{__init__.py,plugin.yaml,README.md} "$DEST/"
 else
-  say "Downloading init.py"
-  curl -fsSL "$REPO_RAW/__init__.py" -o "$DEST/init.py"
-  say "Downloading plugin.yaml"
-  curl -fsSL "$REPO_RAW/plugin.yaml" -o "$DEST/plugin.yaml"
-  say "Downloading README.md"
-  curl -fsSL "$REPO_RAW/README.md" -o "$DEST/README.md"
+  for f in "${FILES[@]}"; do
+    say "Downloading $f"
+    curl -fsSL "$REPO_RAW/$f" -o "$DEST/$f"
+  done
 fi
 
 cat <<EOF
