@@ -267,7 +267,18 @@ class MemraMemoryProvider(MemoryProvider):
         resp.raise_for_status()
         return resp.json().get("data", []) or []
 
-    def _api_list(self, *, limit: int = 50) -> List[dict]:
+    def _api_get(self, memory_id: str) -> Optional[dict]:
+        """Fetch a single memory, including full content from storage."""
+        resp = self._get_http().get(f"/memories/{memory_id}")
+        resp.raise_for_status()
+        return resp.json()
+
+    def _api_list(self, *, limit: int = 20) -> List[dict]:
+        # GET /memories returns index metadata only — no content field, by
+        # design. So we list by importance, then hydrate each row's content
+        # from the single-memory endpoint. Unlike recall, this surfaces
+        # memories whose embeddings are still pending (e.g. just-written facts),
+        # which is what makes a write visible to a profile read immediately.
         params = {
             "tenant_id": self._tenant_id,
             "project_id": self._project_id,
@@ -277,7 +288,22 @@ class MemraMemoryProvider(MemoryProvider):
         }
         resp = self._get_http().get("/memories", params=params)
         resp.raise_for_status()
-        return resp.json().get("memories", []) or []
+        rows = resp.json().get("memories", []) or []
+
+        hydrated: List[dict] = []
+        for row in rows:
+            memory_id = row.get("id")
+            if not memory_id:
+                continue
+            try:
+                full = self._api_get(memory_id)
+                content = (full or {}).get("content")
+                if content:
+                    row = {**row, "content": content}
+            except Exception as e:
+                logger.debug("Memra content hydration failed for %s: %s", memory_id, e)
+            hydrated.append(row)
+        return hydrated
 
     # -- System prompt -----------------------------------------------------
 
@@ -417,7 +443,7 @@ class MemraMemoryProvider(MemoryProvider):
 
         if tool_name == "memra_profile":
             try:
-                memories = self._api_list(limit=50)
+                memories = self._api_list(limit=20)
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
