@@ -2,8 +2,8 @@
 
 [Memra](https://usememra.com) is a self-hosted, EU-native memory API for AI
 agents: hybrid semantic + structured recall, async embeddings, typed memories
-(semantic / episodic / procedural / working), importance ranking, and
-server-side compression of long-lived memories.
+(fact / event / preference / context / decision / pattern / entity / working),
+importance ranking, and server-side compression of long-lived memories.
 
 This provider is **self-contained** — it talks to the Memra REST API directly
 over HTTPS. No Memra client package required.
@@ -44,17 +44,17 @@ Config file: `$HERMES_HOME/memra.json` (secrets go to `.env`).
 |------|-------------|
 | `memra_profile` | Overview of stored memories (importance-ranked). |
 | `memra_search` | Hybrid semantic + structured recall by meaning. |
-| `memra_remember` | Store a durable fact (type `semantic`, importance, tags). |
+| `memra_remember` | Store a durable fact (type `fact`, importance, tags). |
 
 ## Behavior
 
 - **Prefetch** — recalls relevant memories before each turn (background, non-blocking).
-- **Turn sync** — persists each turn as an `episodic` memory.
+- **Turn sync** — persists each turn as an `event` memory.
 - **Compression survival** — `on_pre_compress` ships the about-to-be-discarded
   context to Memra so it stays recallable after Hermes compresses the window;
   Memra applies its own server-side compression to the stored span.
 - **Built-in mirror** — `on_memory_write` mirrors Hermes `MEMORY.md` / `USER.md`
-  writes into Memra as `semantic` memories.
+  writes into Memra (`USER.md` → `preference`, `MEMORY.md` → `context`).
 
 All network calls are guarded by a circuit breaker (pauses after 5 consecutive
 failures for 120s) so a Memra outage never blocks the agent loop.

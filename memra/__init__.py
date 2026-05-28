@@ -2,8 +2,8 @@
 
 Memra (https://usememra.com) is a self-hosted, EU-native memory API for AI
 agents: hybrid semantic + structured recall, async embeddings, typed memories
-(semantic / episodic / procedural / working), importance ranking, and
-server-side compression of long-lived memories.
+(fact / event / preference / context / decision / pattern / entity / working),
+importance ranking, and server-side compression of long-lived memories.
 
 This provider is self-contained — it talks to the Memra REST API directly over
 HTTPS and has no Memra client dependency.
@@ -237,7 +237,7 @@ class MemraMemoryProvider(MemoryProvider):
 
     # -- REST helpers ------------------------------------------------------
 
-    def _api_add(self, content: str, *, type: str = "semantic",
+    def _api_add(self, content: str, *, type: str = "fact",
                  importance: int = 5, tags: Optional[List[str]] = None,
                  source: str = "hermes") -> None:
         body = {
@@ -323,14 +323,14 @@ class MemraMemoryProvider(MemoryProvider):
     # -- Turn sync ---------------------------------------------------------
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Persist the completed turn as an episodic memory (non-blocking)."""
+        """Persist the completed turn as an event memory (non-blocking)."""
         if self._is_breaker_open() or not user_content:
             return
 
         def _sync():
             try:
                 content = f"User: {user_content}\nAssistant: {assistant_content}"
-                self._api_add(content, type="episodic", importance=4,
+                self._api_add(content, type="event", importance=4,
                               tags=["hermes:turn"], source="hermes:turn")
                 self._record_success()
             except Exception as e:
@@ -367,7 +367,7 @@ class MemraMemoryProvider(MemoryProvider):
 
         def _store():
             try:
-                self._api_add(digest, type="episodic", importance=5,
+                self._api_add(digest, type="event", importance=5,
                               tags=["hermes:compression"], source="hermes:compression")
                 self._record_success()
             except Exception as e:
@@ -388,9 +388,11 @@ class MemraMemoryProvider(MemoryProvider):
         if self._is_breaker_open() or action not in ("add", "replace") or not content:
             return
 
+        mem_type = "preference" if target == "user" else "context"
+
         def _mirror():
             try:
-                self._api_add(content, type="semantic", importance=6,
+                self._api_add(content, type=mem_type, importance=6,
                               tags=[f"hermes:{target}"], source=f"hermes:builtin:{target}")
                 self._record_success()
             except Exception as e:
@@ -453,7 +455,7 @@ class MemraMemoryProvider(MemoryProvider):
             importance = int(args.get("importance", 6))
             tags = args.get("tags") or None
             try:
-                self._api_add(content, type="semantic", importance=importance,
+                self._api_add(content, type="fact", importance=importance,
                               tags=tags, source="hermes:remember")
                 self._record_success()
                 return json.dumps({"result": "Fact stored."})
