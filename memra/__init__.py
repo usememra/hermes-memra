@@ -290,6 +290,11 @@ class MemraMemoryProvider(MemoryProvider):
         resp.raise_for_status()
         rows = resp.json().get("memories", []) or []
 
+        # The list endpoint returns superseded rows too (unlike recall, which
+        # excludes them). Drop retired knowledge so a profile overview shows
+        # only the current value of each memory.
+        rows = [r for r in rows if r.get("status", "active") == "active"]
+
         hydrated: List[dict] = []
         for row in rows:
             memory_id = row.get("id")
