@@ -132,8 +132,9 @@ REMEMBER_SCHEMA = {
     "description": (
         "Store a durable fact about the user or project. Use for explicit "
         "preferences, corrections, or decisions worth recalling later. Use "
-        "action='supersede' with old_text to replace a previously-stored fact "
-        "in place (the old version is retired, no duplicate row)."
+        "action='supersede' with old_text (or memory_id) to replace a "
+        "previously-stored fact in place (the old version is retired, no "
+        "duplicate row)."
     ),
     "parameters": {
         "type": "object",
@@ -142,12 +143,16 @@ REMEMBER_SCHEMA = {
                 "type": "string",
                 "enum": ["add", "supersede"],
                 "default": "add",
-                "description": "add=store a new fact; supersede=replace an existing fact located by old_text.",
+                "description": "add=store a new fact; supersede=replace an existing fact located by old_text or memory_id.",
             },
             "content": {"type": "string", "description": "The fact to store."},
             "old_text": {
                 "type": "string",
-                "description": "Required when action='supersede'. A locating substring of the existing fact to replace.",
+                "description": "For action='supersede': a locating substring of the existing fact to replace. Provide this or memory_id.",
+            },
+            "memory_id": {
+                "type": "string",
+                "description": "For action='supersede': replace this exact memory by id (from memra_search/memra_profile). Takes precedence over old_text and works on any row, including ones the substring search can't reach.",
             },
             "importance": {"type": "integer", "description": "How important (1-10, default: 6)."},
             "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional labels."},
@@ -645,13 +650,18 @@ class MemraMemoryProvider(MemoryProvider):
             tags = args.get("tags") or None
 
             if action == "supersede":
+                memory_id = (args.get("memory_id") or "").strip()
                 old_text = args.get("old_text", "")
-                if not old_text:
-                    return tool_error("action='supersede' requires 'old_text'")
+                if not memory_id and not old_text:
+                    return tool_error("action='supersede' requires 'memory_id' or 'old_text'")
                 try:
-                    memory_id = self._find_memory_by_substring(old_text)
+                    # An explicit memory_id wins and bypasses the substring
+                    # finder — necessary for rows the finder can't reach (e.g.
+                    # legacy facts with source=None) and unambiguous.
                     if not memory_id:
-                        return tool_error(f"No stored fact matched old_text={old_text!r}")
+                        memory_id = self._find_memory_by_substring(old_text)
+                        if not memory_id:
+                            return tool_error(f"No stored fact matched old_text={old_text!r}")
                     self._api_supersede(memory_id, content)
                     self._record_success()
                     return json.dumps({"result": "Fact superseded.", "memory_id": memory_id})

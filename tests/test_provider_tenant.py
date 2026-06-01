@@ -252,7 +252,36 @@ class TestSupersede:
         }))
         assert out.get("memory_id") == "mem_b"
 
-    def test_supersede_requires_old_text(self, fake_hermes_home):
+    def test_supersede_by_explicit_memory_id_bypasses_finder(self, fake_hermes_home):
+        # A legacy row with source=None — the substring finder skips it. An
+        # explicit memory_id must still supersede it directly (no list/GET).
+        http = _FakeHttp(rows=[], contents={})
+        memra = _import_memra()
+        p = _provider_with_http(memra, http)
+        out = json.loads(p.handle_tool_call("memra_remember", {
+            "action": "supersede",
+            "memory_id": "mem_legacy_sourceless",
+            "content": "corrected value",
+        }))
+        assert out.get("result") == "Fact superseded."
+        assert out.get("memory_id") == "mem_legacy_sourceless"
+        assert http.superseded == [("mem_legacy_sourceless", "corrected value")]
+
+    def test_explicit_memory_id_wins_over_old_text(self, fake_hermes_home):
+        rows = [{"id": "mem_bytext", "status": "active", "source": "hermes:remember"}]
+        http = _FakeHttp(rows, {"mem_bytext": "findable by text"})
+        memra = _import_memra()
+        p = _provider_with_http(memra, http)
+        out = json.loads(p.handle_tool_call("memra_remember", {
+            "action": "supersede",
+            "memory_id": "mem_explicit",
+            "old_text": "findable by text",
+            "content": "new",
+        }))
+        assert out.get("memory_id") == "mem_explicit"  # id wins, finder not used
+        assert http.superseded == [("mem_explicit", "new")]
+
+    def test_supersede_requires_id_or_old_text(self, fake_hermes_home):
         memra = _import_memra()
         p = _provider_with_http(memra, _FakeHttp())
         out = json.loads(p.handle_tool_call("memra_remember", {
