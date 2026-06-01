@@ -21,6 +21,12 @@ Safe to re-run: rows already migrated carry a ``migrated:from:<src>`` tag
 and are skipped on subsequent passes. On 429 the script backs off using the
 server's ``Retry-After`` hint.
 
+Server-side cascade: Memra cascades migration of extracted-fact children
+when their parent event is moved. After the script migrates a parent and
+DELETEs the original, the child rows from the source list will return 404
+on the per-row GET — they were already moved server-side. Those rows are
+reported as ``cascaded`` (counted as success), not ``failed``.
+
 Usage::
 
   ~/.hermes/hermes-agent/venv/bin/python migrate_tenant.py \\
@@ -31,7 +37,7 @@ Usage::
 
 Exit codes::
 
-  0 = every row migrated (or already present)
+  0 = every row migrated (directly or via server-side cascade)
   1 = at least one row failed to migrate
 """
 from __future__ import annotations
@@ -125,8 +131,17 @@ def list_source(client: Client, tenant: str, project_id: str) -> list[dict]:
     return rows
 
 
-def fetch_full(client: Client, memory_id: str) -> dict:
+def fetch_full(client: Client, memory_id: str) -> dict | None:
+    """Return the full row, or ``None`` if the server returns 404.
+
+    A 404 here means the row is no longer in the source tenant — usually
+    because Memra cascaded the move when its parent event was migrated
+    earlier in the same run. Callers should treat ``None`` as "already
+    handled server-side," not as an error.
+    """
     r = client.request("GET", f"/memories/{memory_id}")
+    if r.status_code == 404:
+        return None
     r.raise_for_status()
     return r.json()
 
@@ -225,7 +240,7 @@ def main() -> int:
     src_rows = list_source(client, args.from_tenant, project_id)
     print(f"Found {len(src_rows)} rows in source tenant.")
 
-    ok = skipped = failed = 0
+    ok = cascaded = skipped = failed = 0
     migrated_tag = f"migrated:from:{args.from_tenant}"
     for i, meta in enumerate(src_rows, 1):
         src_id = meta.get("id")
@@ -234,6 +249,11 @@ def main() -> int:
         except Exception as e:
             failed += 1
             print(f"  [{i:>3}/{len(src_rows)}] {src_id}  FETCH FAILED  {e}")
+            continue
+        if full is None:
+            cascaded += 1
+            print(f"  [{i:>3}/{len(src_rows)}] {src_id}  already moved "
+                  f"(server-side cascade) — counted as migrated")
             continue
         content = full.get("content") or ""
         if not content:
@@ -274,7 +294,7 @@ def main() -> int:
         time.sleep(max(args.pace, 0.0))
 
     print()
-    print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
+    print(f"Summary: ok={ok} cascaded={cascaded} skipped={skipped} failed={failed}")
     return 0 if failed == 0 else 1
 
 
