@@ -84,3 +84,13 @@ python3 integrations/hermes-agent/test_memra_smoke.py   # network-stubbed
 The smoke test exercises ABC compliance, all three tools, the prefetch/sync/
 compress/mirror hooks, the circuit breaker, and `MemoryManager` registration —
 no live Memra account required.
+
+## Troubleshooting
+
+**Very long memories occasionally fail to store with some local models.**
+This is a host-side (Hermes) limitation, not a Memra one. Some local models
+(e.g. certain OpenRouter local models) emit slightly-malformed JSON when a
+tool call carries a large argument; Hermes' tool-call sanitizer may drop the
+argument before it reaches Memra. Memra itself accepts content up to 10,000
+characters of any shape. Workarounds: use a well-behaved model (Claude, GPT,
+most hosted models), or split very large memories into smaller writes.
