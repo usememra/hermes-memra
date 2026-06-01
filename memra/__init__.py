@@ -131,12 +131,24 @@ REMEMBER_SCHEMA = {
     "name": "memra_remember",
     "description": (
         "Store a durable fact about the user or project. Use for explicit "
-        "preferences, corrections, or decisions worth recalling later."
+        "preferences, corrections, or decisions worth recalling later. Use "
+        "action='supersede' with old_text to replace a previously-stored fact "
+        "in place (the old version is retired, no duplicate row)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["add", "supersede"],
+                "default": "add",
+                "description": "add=store a new fact; supersede=replace an existing fact located by old_text.",
+            },
             "content": {"type": "string", "description": "The fact to store."},
+            "old_text": {
+                "type": "string",
+                "description": "Required when action='supersede'. A locating substring of the existing fact to replace.",
+            },
             "importance": {"type": "integer", "description": "How important (1-10, default: 6)."},
             "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional labels."},
         },
@@ -398,6 +410,43 @@ class MemraMemoryProvider(MemoryProvider):
                 return memory_id
         return None
 
+    def _find_memory_by_substring(self, old_text: str) -> Optional[str]:
+        """Find the id of an active *durable-fact* memory whose content contains
+        old_text. Unlike _find_mirror_id (which is scoped to a single built-in
+        mirror source), this searches across the fact-bearing hermes sources —
+        memra_remember writes (``hermes:remember``) and built-in mirrors
+        (``hermes:builtin:*``). It deliberately excludes the append-only logs
+        ``hermes:turn`` and ``hermes:compression``: those store verbatim
+        conversation text that may quote a fact, so matching them would
+        supersede a transcript entry instead of the fact itself. Uses the list
+        endpoint (immediate, even for rows whose embedding is still pending),
+        newest-first, and returns the first containing match."""
+        params = {
+            "tenant_id": self._tenant_id,
+            "project_id": self._project_id,
+            "limit": 100,
+            "sort": "created_at",
+            "order": "desc",
+        }
+        resp = self._get_http().get("/memories", params=params)
+        resp.raise_for_status()
+        for row in resp.json().get("memories", []) or []:
+            if row.get("status", "active") != "active":
+                continue
+            src = row.get("source", "") or ""
+            if not (src == "hermes:remember" or src.startswith("hermes:builtin:")):
+                continue
+            memory_id = row.get("id")
+            if not memory_id:
+                continue
+            try:
+                full = self._api_get(memory_id)
+            except Exception:
+                continue
+            if old_text in (full or {}).get("content", ""):
+                return memory_id
+        return None
+
     # -- System prompt -----------------------------------------------------
 
     def system_prompt_block(self) -> str:
@@ -558,8 +607,9 @@ class MemraMemoryProvider(MemoryProvider):
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
-                lines = [m.get("content", "") for m in memories if m.get("content")]
-                return json.dumps({"result": "\n".join(lines), "count": len(lines)})
+                items = [{"memory_id": m.get("id"), "content": m.get("content", "")}
+                         for m in memories if m.get("content")]
+                return json.dumps({"memories": items, "count": len(items)})
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Failed to fetch profile: {e}")
@@ -578,8 +628,9 @@ class MemraMemoryProvider(MemoryProvider):
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
-                items = [{"content": r.get("content", ""), "score": r.get("score", 0),
-                          "importance": r.get("importance")} for r in results]
+                items = [{"memory_id": r.get("id"), "content": r.get("content", ""),
+                          "score": r.get("score", 0), "importance": r.get("importance")}
+                         for r in results]
                 return json.dumps({"results": items, "count": len(items)})
             except Exception as e:
                 self._record_failure()
@@ -589,8 +640,25 @@ class MemraMemoryProvider(MemoryProvider):
             content = args.get("content", "")
             if not content:
                 return tool_error("Missing required parameter: content")
+            action = args.get("action", "add")
             importance = int(args.get("importance", 6))
             tags = args.get("tags") or None
+
+            if action == "supersede":
+                old_text = args.get("old_text", "")
+                if not old_text:
+                    return tool_error("action='supersede' requires 'old_text'")
+                try:
+                    memory_id = self._find_memory_by_substring(old_text)
+                    if not memory_id:
+                        return tool_error(f"No stored fact matched old_text={old_text!r}")
+                    self._api_supersede(memory_id, content)
+                    self._record_success()
+                    return json.dumps({"result": "Fact superseded.", "memory_id": memory_id})
+                except Exception as e:
+                    self._record_failure()
+                    return tool_error(f"Supersede failed: {e}")
+
             try:
                 self._api_add(content, type="fact", importance=importance,
                               tags=tags, source="hermes:remember")
