@@ -157,3 +157,128 @@ class TestInitLogging:
         assert "tenant_id='canonical'" in joined
         assert "source=config" in joined
         assert "session='sess123'" in joined
+
+
+class _FakeResp:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class _FakeHttp:
+    """Stub the Memra REST surface the remember/supersede paths touch:
+    GET /memories (list), GET /memories/{id} (hydrate), POST .../supersede,
+    POST /memories (add)."""
+
+    def __init__(self, rows=None, contents=None):
+        self._rows = rows or []
+        self._contents = contents or {}
+        self.superseded = []  # list of (id, content)
+        self.added = []       # list of request bodies
+
+    def get(self, path, params=None):
+        if path == "/memories":
+            return _FakeResp({"memories": self._rows})
+        if path.startswith("/memories/"):
+            mid = path.rsplit("/", 1)[-1]
+            return _FakeResp({"id": mid, "content": self._contents.get(mid, "")})
+        raise AssertionError(f"unexpected GET {path}")
+
+    def post(self, path, json=None):
+        if path.endswith("/supersede"):
+            mid = path.split("/memories/", 1)[1].rsplit("/supersede", 1)[0]
+            self.superseded.append((mid, (json or {}).get("content")))
+            return _FakeResp({})
+        if path == "/memories":
+            self.added.append(json or {})
+            return _FakeResp({})
+        raise AssertionError(f"unexpected POST {path}")
+
+
+def _provider_with_http(memra, http):
+    p = memra.MemraMemoryProvider()
+    p._project_id = "proj_test"
+    p._tenant_id = "hermes-user"
+    p._http = http  # _get_http() returns this directly when set
+    return p
+
+
+class TestSupersede:
+    """Pin the 2026-06 supersede gap fix: memra_remember(action="supersede")
+    must retire the matching durable fact in place — and must NOT mis-target an
+    append-only transcript that merely quotes the fact."""
+
+    def test_supersede_targets_durable_fact_not_transcript(self, fake_hermes_home):
+        # The NEWEST row is a hermes:turn transcript that also contains the
+        # old_text. If source-scoping were wrong, newest-first ordering would
+        # supersede the transcript. It must skip it and hit the fact row.
+        rows = [
+            {"id": "mem_turn", "status": "active", "source": "hermes:turn"},
+            {"id": "mem_fact", "status": "active", "source": "hermes:remember"},
+        ]
+        contents = {
+            "mem_turn": "User: DNS still points to Inleed\nAssistant: noted",
+            "mem_fact": "DNS still points to Inleed (185.189.48.4)",
+        }
+        http = _FakeHttp(rows, contents)
+        memra = _import_memra()
+        p = _provider_with_http(memra, http)
+        out = json.loads(p.handle_tool_call("memra_remember", {
+            "action": "supersede",
+            "old_text": "DNS still points to Inleed",
+            "content": "DNS now points to Hetzner (65.109.172.126)",
+        }))
+        assert out.get("result") == "Fact superseded."
+        assert out.get("memory_id") == "mem_fact"
+        assert http.superseded == [
+            ("mem_fact", "DNS now points to Hetzner (65.109.172.126)")
+        ]
+
+    def test_supersede_also_matches_builtin_mirror_source(self, fake_hermes_home):
+        rows = [{"id": "mem_b", "status": "active", "source": "hermes:builtin:memory"}]
+        contents = {"mem_b": "old mirrored note"}
+        http = _FakeHttp(rows, contents)
+        memra = _import_memra()
+        p = _provider_with_http(memra, http)
+        out = json.loads(p.handle_tool_call("memra_remember", {
+            "action": "supersede", "old_text": "old mirrored", "content": "new note",
+        }))
+        assert out.get("memory_id") == "mem_b"
+
+    def test_supersede_requires_old_text(self, fake_hermes_home):
+        memra = _import_memra()
+        p = _provider_with_http(memra, _FakeHttp())
+        out = json.loads(p.handle_tool_call("memra_remember", {
+            "action": "supersede", "content": "x",
+        }))
+        assert "error" in out
+
+    def test_supersede_no_match_errors_without_adding(self, fake_hermes_home):
+        rows = [{"id": "mem_fact", "status": "active", "source": "hermes:remember"}]
+        http = _FakeHttp(rows, {"mem_fact": "unrelated fact"})
+        memra = _import_memra()
+        p = _provider_with_http(memra, http)
+        out = json.loads(p.handle_tool_call("memra_remember", {
+            "action": "supersede", "old_text": "NO-SUCH-TEXT", "content": "x",
+        }))
+        assert "error" in out
+        assert http.superseded == []
+        assert http.added == []  # a failed supersede must not silently add
+
+    def test_default_action_still_adds(self, fake_hermes_home):
+        http = _FakeHttp()
+        memra = _import_memra()
+        p = _provider_with_http(memra, http)
+        out = json.loads(p.handle_tool_call("memra_remember", {
+            "content": "a brand new fact",
+        }))
+        assert out.get("result") == "Fact stored."
+        assert len(http.added) == 1
+        assert http.added[0]["source"] == "hermes:remember"
