@@ -308,6 +308,10 @@ class MemraMemoryProvider(MemoryProvider):
             body["min_importance"] = min_importance
         resp = self._get_http().post("/memories/recall", json=body)
         resp.raise_for_status()
+        # Recall response shape: { "data": [...], "meta": ..., "estimated_tokens": N }.
+        # Note the "data" key — GET /memories returns { "memories": [...] } instead,
+        # so anyone hand-rolling direct API calls (dashboards, ad-hoc tooling) needs
+        # to switch keys depending on which endpoint they hit.
         return resp.json().get("data", []) or []
 
     def _api_get(self, memory_id: str) -> Optional[dict]:
