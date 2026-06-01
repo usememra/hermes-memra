@@ -11,10 +11,34 @@ HTTPS and has no Memra client dependency.
 Config via environment variables:
   MEMRA_API_KEY      — Memra API key, e.g. memra_live_xxx (required)
   MEMRA_PROJECT_ID   — Memra project id, e.g. proj_xxx (required)
-  MEMRA_TENANT_ID    — Tenant/user scope (default: derived from user_id, else "hermes-user")
+  MEMRA_TENANT_ID    — Tenant/user scope. When set, pins every session to this
+                       tenant regardless of platform. Leave unset for multi-user
+                       gateways that need per-user scoping.
   MEMRA_BASE_URL     — API base (default: https://usememra.com/api/v1)
 
 Or via $HERMES_HOME/memra.json.
+
+## Tenant scoping (READ BEFORE INSTALLING)
+
+Memra rows are partitioned by ``tenant_id``. Sessions only see rows tagged with
+the same tenant they were initialized with. Tenant resolution priority:
+
+  1. ``MEMRA_TENANT_ID`` / ``memra.json:tenant_id``  (explicit operator choice)
+  2. ``kwargs['user_id']`` passed by the gateway      (platform identity)
+  3. ``"hermes-user"``                                (built-in default)
+
+**Single-user deployment** (the common case): set ``tenant_id`` explicitly so
+every platform (CLI, Telegram, Discord, cron) writes to and reads from the
+same tenant. Otherwise different platforms silently fragment into different
+stores keyed by their respective ``user_id`` value (e.g. Telegram's chat_id
+becomes the tenant, while CLI uses the default). The setup script
+``memra-profile-setup/setup_memra_profile.py`` writes ``tenant_id`` for you.
+
+**Multi-user gateway**: leave ``tenant_id`` unset so the plugin uses the
+gateway-provided ``user_id`` per session, scoping each user's memory.
+
+Run ``plugins/memra/scripts/memra_doctor.py`` to detect existing fragmentation
+in your project, and ``plugins/memra/scripts/migrate_tenant.py`` to repair it.
 """
 
 from __future__ import annotations
@@ -184,12 +208,31 @@ class MemraMemoryProvider(MemoryProvider):
         self._api_key = self._config.get("api_key", "")
         self._project_id = self._config.get("project_id", "")
         self._base_url = (self._config.get("base_url") or _DEFAULT_BASE_URL).rstrip("/")
-        # Prefer gateway-provided user_id for per-user memory scoping;
-        # fall back to config/env default for CLI (single-user) sessions.
-        self._tenant_id = (
-            kwargs.get("user_id")
-            or self._config.get("tenant_id")
-            or "hermes-user"
+        # Tenant resolution: an explicit tenant_id in env/memra.json pins the
+        # scope across every platform (CLI, Telegram, cron). Without that
+        # explicit override, fall back to the gateway-provided user_id so a
+        # multi-user gateway still isolates per-user memory. Without either,
+        # use a stable default. This priority fixes a silent split where the
+        # same single-user install wrote to tenant="<chat_id>" from Telegram
+        # but read tenant="hermes-user" from CLI/cron.
+        cfg_tenant = self._config.get("tenant_id")
+        kw_user_id = kwargs.get("user_id")
+        if cfg_tenant:
+            self._tenant_id = cfg_tenant
+            tenant_source = "config"
+        elif kw_user_id:
+            self._tenant_id = kw_user_id
+            tenant_source = "gateway-user_id"
+        else:
+            self._tenant_id = "hermes-user"
+            tenant_source = "default"
+        # One INFO line per session init so fragmentation is grep-able in
+        # ~/.hermes/logs/agent.log without re-running a doctor probe.
+        logger.info(
+            "Memra initialized: tenant_id=%r (source=%s) project_id=%r session=%r",
+            self._tenant_id, tenant_source,
+            self._project_id[:14] + "..." if self._project_id else "(empty)",
+            session_id,
         )
 
     def _get_http(self):
